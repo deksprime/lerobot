@@ -93,6 +93,8 @@
     title: NVIDIA GR00T
   - local: xvla
     title: X-VLA
+  - local: xiaomi_robotics_1
+    title: Xiaomi-Robotics-1
   - local: multi_task_dit
     title: Multitask DiT Policy
   - local: walloss

@@ -56,6 +56,7 @@ from .vla_jepa.configuration_vla_jepa import VLAJEPAConfig as VLAJEPAConfig
 from .vqbet.configuration_vqbet import VQBeTConfig as VQBeTConfig
 from .wall_oss_05.configuration_wall_oss_05 import WallOSS05Config as WallOSS05Config
 from .wall_x.configuration_wall_x import WallXConfig as WallXConfig
+from .xiaomi_robotics_1.configuration_xiaomi_robotics_1 import XiaomiRobotics1Config as XiaomiRobotics1Config
 from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
 
 # NOTE: Policy modeling classes (e.g., GaussianActorPolicy) are intentionally NOT re-exported here.
@@ -92,6 +93,7 @@ __all__ = [
     "VQBeTConfig",
     "WallXConfig",
     "WallOSS05Config",
+    "XiaomiRobotics1Config",
     "XVLAConfig",
     # Chunk execution contracts
     "ChunkPolicySpec",
