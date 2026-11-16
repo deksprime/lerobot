@@ -1,0 +1,139 @@
+# Xiaomi-Robotics-1 (XR-1)
+
+Xiaomi-Robotics-1 is a ~5B-parameter **Vision-Language-Action policy** from Xiaomi Robotics, trained on more than
+100K hours of real-world trajectories. The LeRobot implementation runs the released checkpoints through the standard
+policy, processor, `lerobot-train` and `lerobot-eval` interfaces. The original code and checkpoints are Apache-2.0:
+[code](https://github.com/XiaomiRobotics/Xiaomi-Robotics-1) and
+[checkpoints](https://huggingface.co/XiaomiRobotics).
+
+> **Status: in progress.** The processor stage of the original-vs-port comparison is identical and the tiny-model
+> chunk comparison agrees, but the full-checkpoint chunk comparison and the benchmark reproduction have **not** been
+> run yet. See [Parity](#parity). Until then, treat numbers from this port as unverified.
+
+## Model Overview
+
+- A **Qwen3-VL-4B** backbone reads the camera views and the instruction once per chunk (images are grouped under
+  `# Base View` and `# Left-Wrist View` headers, followed by `Generate robot actions for the task: ... /no_cot`).
+- A **36-layer DiT action expert** (hidden size 1024, 8 heads of 128) integrates a flow-matching velocity field in five
+  Euler steps. Every expert layer attends to its own tokens (a sink token, the state, the noisy action chunk) **and to
+  the key/value cache of the backbone layer with the same index**. There are no cross-attention weights: the backbone
+  cache is the conditioning.
+- State and action are zero-padded to 60 dimensions; the RoboCasa checkpoints predict a 10-step chunk of 7-dimensional
+  actions. The raw joint state is fed unnormalized; only the action is normalized (mean/std).
+
+The backbone is the stock `transformers` `Qwen3VLForConditionalGeneration` (subclassed only to expose the prefix cache
+and the multimodal positions). The action expert is written against the released tensor layout, so the converted
+checkpoint keeps the authors' parameter names under a `model.` prefix. Nothing uses `trust_remote_code`.
+
+### What the LeRobot integration covers
+
+- `policy.type=xiaomi_robotics_1` configuration, checkpoint save/load, the standard processor pipelines.
+- Inference with the released checkpoints after conversion (see below). Only the RoboCasa one has been examined.
+- Fine-tuning with the flow-matching loss of the authors' training code (MSE plus a frequency-domain term).
+
+**Not covered.** The authors' training also supervises the backbone with auxiliary "action choice" and "score" tokens.
+The released inference checkpoints carry no such tokens, so this port trains the action expert (and, by default, the
+backbone) with the flow-matching loss only. The authors' prefix-conditioned "async" training mode is not ported. Both
+are listed so nobody expects a bit-for-bit training run.
+
+## Installation
+
+```bash
+pip install -e ".[xiaomi_robotics_1]"
+```
+
+The backbone uses PyTorch's scaled-dot-product attention by default. The authors run it with FlashAttention 2;
+request it with `policy.attn_implementation=flash_attention_2` if `flash_attn` is installed.
+
+## Convert a released checkpoint
+
+The released checkpoints are in the authors' own `transformers` format. Convert one (the 10 GB file is streamed one
+tensor at a time) and pin the revision:
+
+```bash
+python -m lerobot.policies.xiaomi_robotics_1.convert_xiaomi_robotics_1_to_lerobot \
+  --source XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa \
+  --revision 82b7c2210c1a39fca4a87e681cffbbed134ccde0 \
+  --output_dir ./xr1_robocasa_lerobot
+```
+
+The tokenizer, chat template and image settings are **not** copied: they are read from the official repository at the
+same revision when the processors are built. Use the official `XiaomiRobotics/*` repositories only.
+
+## Evaluation
+
+**The released RoboCasa checkpoints do not run through `--env.type=robocasa` as is.** They were trained on the
+authors' own proprioception and action layout: an 8-dimensional state (7 joint positions and the gripper) and a
+7-dimensional action (6 arm values and the gripper, written into the first 7 slots of the simulator's action vector).
+LeRobot's RoboCasa environment reports a 16-dimensional state (base pose, end-effector pose relative to the base,
+gripper) and a 12-dimensional action in a different order, and the joint positions are not in its observation. Using it
+would feed the model a state it never saw. Until the environment exposes that state, reproduce the published numbers
+with the authors' harness and the port behind it:
+
+```bash
+# in the LeRobot environment (one GPU, loopback only; see the script's security note)
+python tests/policies/xiaomi_robotics_1/utils/serve_port.py --checkpoint ./xr1_robocasa_lerobot --port 10086
+# in the authors' environment, unchanged: eval_robocasa/main.py (their client, their RoboCasa and robosuite pins)
+```
+
+`serve_port.py` answers the authors' wire format with the port, so only the model behind the socket changes.
+`noise_seed=42` reproduces the authors' harness, which passes `seed=42` on every call (the same sampling noise each
+chunk); the server applies the `seed` of each request. `image_crop_ratio=0.95` (the default) is the authors' crop.
+
+## Parity
+
+Checks against the original implementation (Xiaomi-Robotics-1 `0dd7aef`, checkpoint snapshot `82b7c22`), with the
+scripts in `tests/policies/xiaomi_robotics_1/utils/`. Verdicts use the repository's chunk-comparison convention:
+**EXACT** is max abs difference <= 1e-6, **NUM** is cosine >= 0.999 on every full chunk.
+
+| Check                                                                                               | Result                                                                                           |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Prompt, tokenizer and image preprocessing, 8 observations (CPU)                                     | input ids, attention mask and image grids **identical**; pixel values **bitwise equal** (EXACT)  |
+| Parameter names, against the real checkpoint index (1120 tensors) and against the authors' class    | identical                                                                                        |
+| Tiny random model, same weights and real processed inputs, transformers 4.57.1 vs 5.22, float32 CPU | max abs 5.0e-5, cosine 1 - 6e-11 (NUM)                                                           |
+| Same, bfloat16 CPU                                                                                  | max abs 3.1e-2, cosine 0.999993 (NUM)                                                            |
+| Full 5B checkpoint, chunk comparison on a recorded input set (GPU)                                  | **pending**                                                                                      |
+| RoboCasa eval of the published checkpoint through the port, 50+ episodes                            | **pending** (reference: 52.1 % [38.3, 65.5] reproduced with the original code, 56.5 % published) |
+
+### Where `transformers` 4.57.1 and 5.22 differ for this model
+
+- Multimodal rope needs `mm_token_type_ids` in 5.x; the authors' processor (4.57.1) does not return them. The port
+  derives them from `input_ids` when absent. Without them, image tokens get text positions and the chunks differ
+  by about 0.2.
+- `rope_scaling` / `rope_theta` are migrated into `rope_parameters` by `Qwen3VLConfig` (the released config loads
+  unchanged).
+- The backbone no longer returns `position_ids` or the attention mask, and the cache is a `DynamicCache` with
+  `layers[i].keys/.values` rather than a tuple of tuples; the port computes the positions itself and reads the layers.
+- `use_fast=False` is replaced by `backend="pil"` for the image processor.
+- The rotary `inv_freq` buffers are non-persistent and are rounded to bfloat16 when the whole model is cast, as in the
+  authors' stack; the port casts the whole model the same way (tested), and the parity run compares the buffers.
+- The authors' class has no SDPA support for the backbone (flash-attention 2 or eager only); the port uses SDPA by
+  default. Different kernels are the main source of the remaining float-level differences.
+- The authors' timestep embedder hard-codes a bfloat16 cast, so their model cannot run in float32; the port follows the
+  module's dtype (identical in bfloat16).
+
+## Running the full parity check
+
+The full-checkpoint comparison needs a GPU (one 24 GB card is enough for each side; the original needs flash-attn 2) and
+is run in two environments, as for GR00T. See the docstrings of `utils/dump_original_xr1.py` and
+`utils/compare_with_original.py`:
+
+```bash
+# original environment (python 3.12, torch 2.8, transformers 4.57.1, flash-attn 2.8.3)
+python tests/policies/xiaomi_robotics_1/utils/dump_original_xr1.py --revision 82b7c22... --out-dir ./xr1_original --n 24
+# LeRobot environment
+python -m lerobot.policies.xiaomi_robotics_1.convert_xiaomi_robotics_1_to_lerobot --source ... --output_dir ./xr1_lerobot
+python -m tests.policies.xiaomi_robotics_1.utils.compare_with_original --records ./xr1_original --stage model --checkpoint ./xr1_lerobot
+python -m tests.policies.xiaomi_robotics_1.utils.compare_with_original --records ./xr1_original --stage end-to-end --checkpoint ./xr1_lerobot
+```
+
+## Citation
+
+```bibtex
+@article{team2026xiaomi,
+  title={Xiaomi-Robotics-1: Scaling Vision-Language-Action Models with over 100K Hours of Real-World Trajectories},
+  author={Team, Xiaomi Robotics and Guo, Jun and Jin, Piaopiao and Li, Jason and Li, Peiyan and Li, Yingyan and Liu, Futeng and Peng, Wanli and Qin, Optimus and Su, Yifei and others},
+  journal={arXiv preprint arXiv:2607.15330},
+  year={2026}
+}
+```
