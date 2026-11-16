@@ -183,11 +183,8 @@ def stage_model(records: list[dict], policy, end_to_end: bool, device: str) -> d
         from lerobot.policies.xiaomi_robotics_1.processor_xiaomi_robotics_1 import (
             make_xiaomi_robotics_1_pre_post_processors,
         )
-        from lerobot.processor import PolicyProcessorPipeline  # noqa: F401  (pipelines are rebuilt from the config)
 
-        stats = {
-            "action": {"mean": torch.zeros(7), "std": torch.ones(7)}
-        }  # decode is checked separately below
+        stats = {"action": {"mean": torch.zeros(policy._action_dim), "std": torch.ones(policy._action_dim)}}
         pre, _ = make_xiaomi_robotics_1_pre_post_processors(policy.config, dataset_stats=stats)
     for record in records:
         if end_to_end:
