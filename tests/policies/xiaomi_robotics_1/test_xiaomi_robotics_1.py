@@ -292,3 +292,30 @@ def test_save_and_reload_gives_identical_chunks(tmp_path):
     assert torch.equal(
         policy.predict_action_chunk(batch, noise=noise), reloaded.predict_action_chunk(batch, noise=noise)
     )
+
+
+def test_token_types_are_derived_when_the_processor_does_not_return_them(policy):
+    """The authors' processor (transformers 4.57.1) does not emit `mm_token_type_ids`; 5.x needs them for mrope."""
+    batch = make_batch(seed=4)
+    noise = torch.randn(2, CHUNK, MAX_DIM, generator=torch.Generator().manual_seed(3))
+    with_types = policy.predict_action_chunk(batch, noise=noise)
+    without = policy.predict_action_chunk(
+        {k: v for k, v in batch.items() if k != "mm_token_type_ids"}, noise=noise
+    )
+    assert torch.equal(with_types, without)
+
+
+def test_mrope_positions_need_the_image_token_types(policy):
+    """A 4x4 patch grid (2x2 merged tokens) occupies a 2-D block of positions, not a run of text positions."""
+    from tests.policies.xiaomi_robotics_1.tiny import IMAGE_TOKEN_ID, VISION_END_ID, VISION_START_ID
+
+    ids = torch.tensor([[1, 2, VISION_START_ID, *[IMAGE_TOKEN_ID] * 4, VISION_END_ID, 5, 6]])
+    mask = torch.ones_like(ids)
+    grid = torch.tensor([[1, 4, 4]])
+    backbone = policy.model.vlm
+    derived = backbone.mrope_position_ids(ids, mask, grid, None)
+    explicit = backbone.mrope_position_ids(ids, mask, grid, (ids == IMAGE_TOKEN_ID).long())
+    text_only = backbone.mrope_position_ids(ids, mask, grid, torch.zeros_like(ids))
+    assert torch.equal(derived, explicit)
+    assert not torch.equal(derived, text_only)
+    assert derived.shape == (3, 1, ids.shape[1])

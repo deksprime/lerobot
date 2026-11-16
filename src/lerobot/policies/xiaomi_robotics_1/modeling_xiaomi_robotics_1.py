@@ -223,6 +223,13 @@ class XR1Backbone(Qwen3VLForConditionalGeneration):
     modeling file did the same with a `skip_logits` flag.)
     """
 
+    def _mm_token_type_ids(self, input_ids: Tensor, mm_token_type_ids: Tensor | None) -> Tensor:
+        """transformers 5.x needs the token types (text 0, image 1) to place image tokens in mrope space; 4.57.1
+        derived them from `input_ids`, and the authors' processor does not return them, so derive them here."""
+        if mm_token_type_ids is not None:
+            return mm_token_type_ids
+        return (input_ids == self.config.image_token_id).long()
+
     @torch.no_grad()
     def mrope_position_ids(
         self,
@@ -231,8 +238,7 @@ class XR1Backbone(Qwen3VLForConditionalGeneration):
         image_grid_thw: Tensor | None,
         mm_token_type_ids: Tensor | None,
     ) -> Tensor:
-        if mm_token_type_ids is None:
-            mm_token_type_ids = torch.zeros_like(input_ids)
+        mm_token_type_ids = self._mm_token_type_ids(input_ids, mm_token_type_ids)
         position_ids, _ = self.model.get_rope_index(
             input_ids,
             mm_token_type_ids=mm_token_type_ids,
@@ -251,6 +257,7 @@ class XR1Backbone(Qwen3VLForConditionalGeneration):
         mm_token_type_ids: Tensor | None = None,
     ) -> tuple[list[tuple[Tensor, Tensor]], Tensor]:
         """Run the prompt once. Returns the per-layer (key, value) cache and the (3, B, L) positions."""
+        mm_token_type_ids = self._mm_token_type_ids(input_ids, mm_token_type_ids)
         position_ids = self.mrope_position_ids(input_ids, attention_mask, image_grid_thw, mm_token_type_ids)
         outputs = self.model(
             input_ids=input_ids,

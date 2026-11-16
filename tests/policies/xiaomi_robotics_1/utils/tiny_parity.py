@@ -26,7 +26,8 @@ prefix logic and the transformers changes from the 5B weights, the GPU and flash
     # 2. in the LeRobot env:
     python tiny_parity.py port --records ./xr1_original --out ./tiny_parity
 
-bfloat16 on CPU: the authors' timestep embedder hard-codes a bfloat16 cast, so their model cannot run in float32.
+The authors' timestep embedder hard-codes a bfloat16 cast; `--dtype float32` patches that one attribute on the
+original model so both sides can run in float32 (then differences are code, not rounding).
 """
 
 from __future__ import annotations
@@ -76,18 +77,24 @@ def run_original(args: argparse.Namespace) -> None:
         setattr(config.vlm_config.vision_config, key, value)
     for key, value in TINY["dit"].items():
         setattr(config.dit_config, key, value)
+    dtype = getattr(torch, args.dtype)
     torch.manual_seed(0)
-    model = AutoModel.from_config(
-        config, trust_remote_code=True, attn_implementation="eager", dtype=torch.bfloat16
-    )
-    model = model.to(torch.bfloat16).eval()
+    model = AutoModel.from_config(config, trust_remote_code=True, attn_implementation="eager", dtype=dtype)
+    # Default initialisation leaves the expert's output near zero (the flow stays at its noise), which would make
+    # agreement trivial. Re-draw every matrix with a fan-in scaled std so the output depends on the observation.
+    with torch.no_grad():
+        for _, param in model.named_parameters():
+            if param.ndim >= 2:
+                param.normal_(0.0, 1.0 / param.shape[-1] ** 0.5)
+    model = model.to(dtype).eval()
+    model.t_embedder.dtype = dtype  # the authors hard-code bfloat16 here, which cannot run in float32
 
     records = torch.load(Path(args.records) / "records.pt", weights_only=True)
     chunks = []
     for record in records[: args.n]:
         data = {**record["processor"], "task_id": "robocasa_mg", "seed": SEED}
         data = {
-            k: (v.to(torch.bfloat16) if isinstance(v, torch.Tensor) and v.is_floating_point() else v)
+            k: (v.to(dtype) if isinstance(v, torch.Tensor) and v.is_floating_point() else v)
             for k, v in data.items()
         }
         with torch.no_grad():
@@ -115,6 +122,7 @@ def run_port(args: argparse.Namespace) -> None:
     from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
     from tests.policies.xiaomi_robotics_1.utils.compare_with_original import chunk_metrics, summarize
 
+    dtype = getattr(torch, args.dtype)
     out = Path(args.out)
     real = json.loads((Path(args.snapshot) / "config.json").read_text())["vlm_config"]
     real["text_config"].update(TINY["text"])
@@ -132,7 +140,7 @@ def run_port(args: argparse.Namespace) -> None:
         chunk_size=10,
         n_action_steps=10,
         noise_seed=SEED,
-        dtype=torch.bfloat16,
+        dtype=dtype,
         device="cpu",
         input_features={
             f"{OBS_IMAGES}.a": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 256, 256)),
@@ -152,13 +160,22 @@ def run_port(args: argparse.Namespace) -> None:
     rows = []
     for record, original in zip(records, originals, strict=False):
         batch = {k: v for k, v in record["processor"].items() if k not in ("state", "action_mask")}
-        state_vec = policy._state({OBS_STATE: record["state"].float()[None]}).to(torch.bfloat16)
-        mask = torch.zeros(1, 10, 60, dtype=torch.bfloat16)
+        state_vec = policy._state({OBS_STATE: record["state"].float()[None]}).to(dtype)
+        mask = torch.zeros(1, 10, 60, dtype=dtype)
         mask[..., :7] = 1
         with torch.no_grad():
             chunk = policy.model.sample_actions(state_vec, mask, **policy._prefix_inputs(batch))
         rows.append(chunk_metrics(chunk.float(), original))
-    report = summarize("tiny-model parity (port 5.22 vs original 4.57.1, bf16 CPU)", rows)
+    # Make sure the comparison is not trivial: the chunk must differ from its starting noise and between observations.
+    noise = policy.model.sample_noise(mask.shape, mask.device, mask.dtype).float()
+    signal = [float((o - noise).pow(2).mean().sqrt()) for o in originals]
+    spread = float(torch.stack(originals).std(dim=0).mean()) if len(originals) > 1 else 0.0
+    print(json.dumps({"signal_rms_vs_noise": signal, "across_observation_std": spread}))
+    assert min(signal) > 0.05 and spread > 0.01, (
+        "the tiny model's output is degenerate; the comparison proves nothing"
+    )
+    report = summarize(f"tiny-model parity (port 5.22 vs original 4.57.1, {args.dtype} CPU)", rows)
+    report["signal_rms_vs_noise"], report["across_observation_std"] = signal, spread
     (out / "report.json").write_text(json.dumps({"rows": rows, **report}, indent=2))
 
 
@@ -172,12 +189,14 @@ def main() -> None:
     original.add_argument("--records", required=True)
     original.add_argument("--out", required=True)
     original.add_argument("--n", type=int, default=4)
+    original.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"])
     port = sub.add_parser("port")
     port.add_argument(
         "--snapshot", required=True, help="Same directory as for `original` (read for config.json)."
     )
     port.add_argument("--records", required=True)
     port.add_argument("--out", required=True)
+    port.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"])
     args = parser.parse_args()
     run_original(args) if args.side == "original" else run_port(args)
 
