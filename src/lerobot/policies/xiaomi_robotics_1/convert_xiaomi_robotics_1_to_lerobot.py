@@ -179,6 +179,16 @@ def _shards(source_dir: Path) -> Iterator[Path]:
         yield source_dir / "model.safetensors"
 
 
+def _tensor_loader(shard: Path, key: str) -> Callable[[], torch.Tensor]:
+    from safetensors import safe_open
+
+    def load() -> torch.Tensor:
+        with safe_open(shard, framework="pt") as handle:
+            return handle.get_tensor(key)
+
+    return load
+
+
 def convert(
     source: str,
     output_dir: str | Path,
@@ -209,17 +219,14 @@ def convert(
         **config_kwargs,
     )
 
-    entries = []
+    entries: list[tuple[str, str, list[int], Callable[[], torch.Tensor]]] = []
     for shard in _shards(source_dir):
         with safe_open(shard, framework="pt") as handle:
             for key in handle.keys():  # noqa: SIM118
                 piece = handle.get_slice(key)
-
-                def load(shard=shard, key=key):
-                    with safe_open(shard, framework="pt") as h:
-                        return h.get_tensor(key)
-
-                entries.append((convert_key(key), piece.get_dtype(), piece.get_shape(), load))
+                entries.append(
+                    (convert_key(key), piece.get_dtype(), piece.get_shape(), _tensor_loader(shard, key))
+                )
     entries.sort(key=lambda entry: entry[0])
 
     output_dir = Path(output_dir)

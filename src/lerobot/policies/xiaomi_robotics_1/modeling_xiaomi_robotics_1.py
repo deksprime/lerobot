@@ -419,6 +419,8 @@ class XiaomiRobotics1Policy(PreTrainedPolicy):
 
     @property
     def _action_dim(self) -> int:
+        if self.config.output_features is None:
+            raise ValueError("`output_features` must be resolved before the policy can size its actions.")
         return self.config.output_features[ACTION].shape[0]
 
     def _prefix_inputs(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
