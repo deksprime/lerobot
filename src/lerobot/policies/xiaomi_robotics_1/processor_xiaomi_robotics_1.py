@@ -163,7 +163,9 @@ def load_qwen3_vl_processor(name: str, revision: str | None, use_fast: bool) -> 
     require_package("transformers", extra="xiaomi_robotics_1")
     kwargs = {"revision": revision, "trust_remote_code": False}
     tokenizer = AutoTokenizer.from_pretrained(name, **kwargs)
-    image_processor = AutoImageProcessor.from_pretrained(name, use_fast=use_fast, **kwargs)
+    # transformers 5.x replaced `use_fast` by `backend` ("pil" is the old slow processor the authors evaluate with).
+    backend = "torchvision" if use_fast else "pil"
+    image_processor = AutoImageProcessor.from_pretrained(name, backend=backend, **kwargs)
     video_processor = AutoVideoProcessor.from_pretrained(name, **kwargs)
     return Qwen3VLProcessor(
         image_processor=image_processor,
