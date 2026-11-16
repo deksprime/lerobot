@@ -43,10 +43,62 @@ else:
     Qwen3VLTextConfig = None
 
 # Official repository the released tokenizer, chat template and image-processor settings are read from. The XR-1
-# tokenizer is NOT the stock Qwen3-VL one (different `tokenizer.json`), so `vlm_base` alone is not enough.
+# tokenizer is NOT the stock Qwen3-VL one (different `tokenizer.json`), so the backbone's name alone is not enough.
 XR1_PROCESSOR_REPO = "XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa"
 # Snapshot the 52.1 % reproduction and the parity script were run against.
 XR1_PROCESSOR_REVISION = "82b7c2210c1a39fca4a87e681cffbbed134ccde0"
+
+
+def _qwen3_vl_4b_config() -> dict:
+    """Qwen3-VL-4B-Instruct as the released XR-1 checkpoints use it (their `config.json`, `vlm_config`).
+
+    Embedded so that building the config never touches the network; a test checks that it reproduces the released
+    parameter layout exactly.
+    """
+    return {
+        "model_type": "qwen3_vl",
+        "image_token_id": 151655,
+        "video_token_id": 151656,
+        "vision_start_token_id": 151652,
+        "vision_end_token_id": 151653,
+        "tie_word_embeddings": True,
+        "text_config": {
+            "model_type": "qwen3_vl_text",
+            "hidden_size": 2560,
+            "intermediate_size": 9728,
+            "num_hidden_layers": 36,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "vocab_size": 151936,
+            "max_position_embeddings": 262144,
+            "rms_norm_eps": 1e-06,
+            "rope_scaling": {
+                "mrope_interleaved": True,
+                "mrope_section": [24, 20, 20],
+                "rope_type": "default",
+            },
+            "rope_theta": 5000000,
+            "attention_bias": False,
+            "hidden_act": "silu",
+            "tie_word_embeddings": True,
+        },
+        "vision_config": {
+            "model_type": "qwen3_vl",
+            "depth": 24,
+            "hidden_size": 1024,
+            "intermediate_size": 4096,
+            "num_heads": 16,
+            "patch_size": 16,
+            "spatial_merge_size": 2,
+            "temporal_patch_size": 2,
+            "out_hidden_size": 2560,
+            "num_position_embeddings": 2304,
+            "deepstack_visual_indexes": [5, 11, 17],
+            "hidden_act": "gelu_pytorch_tanh",
+            "in_channels": 3,
+        },
+    }
 
 
 @PreTrainedConfig.register_subclass("xiaomi_robotics_1")
@@ -55,8 +107,8 @@ class XiaomiRobotics1Config(PreTrainedConfig):
     """Configuration for the Xiaomi-Robotics-1 policy.
 
     Args:
-        vlm_base: Hub id of the Qwen3-VL backbone, only used to resolve `vlm_config` when it is not given.
-        vlm_config: Serialized `Qwen3VLConfig`. Filled from `vlm_base` in `__post_init__` when None.
+        vlm_config: Serialized `Qwen3VLConfig` of the backbone; the default is Qwen3-VL-4B-Instruct as the released
+            checkpoints use it (no network access is needed to build it).
         processor_name: Hub id (or local path) of the tokenizer, chat template and image processor.
         processor_revision: Revision of `processor_name`.
         base_view_keys, wrist_view_keys: Camera features listed under each view header of the prompt.
@@ -79,8 +131,7 @@ class XiaomiRobotics1Config(PreTrainedConfig):
             left out of it.
     """
 
-    vlm_base: str = "Qwen/Qwen3-VL-4B-Instruct"
-    vlm_config: dict | None = None
+    vlm_config: dict = field(default_factory=_qwen3_vl_4b_config)
     processor_name: str = XR1_PROCESSOR_REPO
     processor_revision: str | None = XR1_PROCESSOR_REVISION
     use_fast_processor: bool = False
@@ -168,17 +219,9 @@ class XiaomiRobotics1Config(PreTrainedConfig):
             raise ValueError("dit_hidden_size // dit_head_dim must be a multiple of dit_num_key_value_heads.")
         self.freq_excluded_dims = tuple(self.freq_excluded_dims)
 
-        if self.vlm_config is None:
-            require_package("transformers", extra="xiaomi_robotics_1")
-            self.vlm_config = Qwen3VLConfig.from_pretrained(self.vlm_base).to_dict()
-
     @property
     def vlm_backbone_config(self) -> Qwen3VLConfig:
         require_package("transformers", extra="xiaomi_robotics_1")
-        if self.vlm_config is None:
-            raise ValueError(
-                "`vlm_config` is populated from `vlm_base` in `__post_init__`; it cannot be None."
-            )
         config = Qwen3VLConfig(**deepcopy(self.vlm_config))
         if self.attn_implementation is not None:
             config._attn_implementation = self.attn_implementation

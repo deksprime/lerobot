@@ -49,7 +49,7 @@ def policy() -> XiaomiRobotics1Policy:
 
 
 def test_defaults_match_released_robocasa_checkpoint():
-    config = XiaomiRobotics1Config(vlm_config={})
+    config = XiaomiRobotics1Config()
     assert config.type == "xiaomi_robotics_1"
     assert (config.max_state_dim, config.max_action_dim) == (60, 60)
     assert (config.chunk_size, config.num_denoise_steps, config.state_length) == (10, 5, 1)
@@ -319,3 +319,21 @@ def test_mrope_positions_need_the_image_token_types(policy):
     assert torch.equal(derived, explicit)
     assert not torch.equal(derived, text_only)
     assert derived.shape == (3, 1, ids.shape[1])
+
+
+def test_default_config_reproduces_the_released_architecture_without_downloading_anything():
+    """The embedded Qwen3-VL-4B + expert config builds exactly the released tensor set (on the meta device)."""
+    from lerobot.policies.xiaomi_robotics_1.modeling_xiaomi_robotics_1 import XiaomiRobotics1Model
+
+    config = XiaomiRobotics1Config(device="cpu")
+    with torch.device("meta"):
+        model = XiaomiRobotics1Model(config)
+    released = set(json.loads((HERE / "released_key_patterns.json").read_text())["patterns"])
+    state = model.state_dict()
+    ours = _patterns(state)
+    ours.discard("vlm.lm_head.weight")
+    assert ours == released
+    # 1120 tensors in the release (the tied lm_head is not one of them) and about 5B parameters.
+    assert len([k for k in state if k != "vlm.lm_head.weight"]) == 1120
+    total = sum(p.numel() for p in model.parameters())
+    assert 4.9e9 < total < 5.3e9, total
