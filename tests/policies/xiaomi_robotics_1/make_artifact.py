@@ -51,6 +51,8 @@ def main() -> None:
     torch.manual_seed(1337)
     policy = XiaomiRobotics1Policy(make_config()).eval()
     policy.save_pretrained(ARTIFACT_DIR)
+    config_path = ARTIFACT_DIR / "config.json"
+    config_path.write_text(config_path.read_text().rstrip("\n") + "\n")  # the repository's end-of-file hook
     batch, noise = reference_inputs()
     chunk = policy.predict_action_chunk(batch, noise=noise)
     save_file({"chunk": chunk.contiguous()}, ARTIFACT_DIR / "expected_chunk.safetensors")
