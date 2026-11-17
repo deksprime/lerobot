@@ -481,11 +481,34 @@ class XiaomiRobotics1Policy(PreTrainedPolicy):
         actions = self.model.sample_actions(state, mask, noise=noise, **self._prefix_inputs(batch))
         return actions[:, :, : self._action_dim].to(torch.float32)
 
+    def eef_targets(self, chunk: Tensor, state: Tensor) -> Tensor:
+        """Turn normalized end-effector deltas into absolute targets, as the authors' VLABench client does.
+
+        `chunk` is `(B, T, >=7)` normalized, `state` `(B, >=7)` with `[x, y, z, rx, ry, rz, gripper]` first. Returns
+        `(B, T, 7)`: the position and Euler targets `state + cumulative sum of the de-normalized deltas` (Euler
+        angles wrapped to [-pi, pi] after every step) and a gripper value of 1.0 when the de-normalized gripper
+        output is at least `eef_gripper_threshold`, else 0.0.
+        """
+        mean = torch.as_tensor(self.config.eef_action_mean[:7], dtype=torch.float32, device=chunk.device)
+        std = torch.as_tensor(self.config.eef_action_std[:7], dtype=torch.float32, device=chunk.device)
+        raw = chunk[:, :, :7].to(torch.float32) * std + mean
+        current = state[:, :7].to(device=chunk.device, dtype=torch.float32).clone()
+        targets = []
+        for step in range(raw.shape[1]):
+            current[:, :6] = current[:, :6] + raw[:, step, :6]
+            current[:, 3:6] = (current[:, 3:6] + torch.pi) % (2.0 * torch.pi) - torch.pi
+            gripper = (raw[:, step, 6] >= self.config.eef_gripper_threshold).to(current.dtype)
+            targets.append(torch.cat([current[:, :6], gripper[:, None]], dim=1))
+        return torch.stack(targets, dim=1)
+
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], *, noise: Tensor | None = None) -> Tensor:
         self.eval()
         if len(self._action_queue) == 0:
             actions = self.predict_action_chunk(batch, noise=noise)[:, : self.config.n_action_steps]
+            if self.config.eef_delta_actions:
+                # The state is read before it is padded: the first 7 values are the end-effector pose and gripper.
+                actions = self.eef_targets(actions, batch[OBS_STATE])
             self._action_queue.extend(actions.transpose(0, 1))
         return self._action_queue.popleft()
 

@@ -112,6 +112,9 @@ class XiaomiRobotics1Config(PreTrainedConfig):
         processor_name: Hub id (or local path) of the tokenizer, chat template and image processor.
         processor_revision: Revision of `processor_name`.
         base_view_keys, wrist_view_keys: Camera features listed under each view header of the prompt.
+        view_groups: Optional explicit prompt layout, a list of `[header, key, key, ...]` entries (for example
+            `["Ego View", "observation.images.ego"]`). When set it replaces `base_view_keys` and `wrist_view_keys`:
+            the prompt lists each header followed by its images, in this order. The VLABench checkpoint uses three.
         dit_hidden_size, dit_num_layers, dit_head_dim, dit_num_key_value_heads: Action-expert shape. The expert
             attends to the backbone's cached keys and values, so `dit_head_dim` must equal the backbone head
             dimension and `dit_hidden_size // dit_head_dim` the backbone's key/value head count.
@@ -126,6 +129,17 @@ class XiaomiRobotics1Config(PreTrainedConfig):
         image_crop_ratio: Centre-crop ratio applied to every camera image and resized back (the authors evaluate
             with 0.95). 1.0 disables it.
         image_min_pixels, image_max_pixels: Bounds of the Qwen3-VL image resize (the checkpoints' values).
+        eef_delta_actions: The checkpoint predicts end-effector deltas (the VLABench one). When true,
+            `select_action` turns the first `n_action_steps` predicted steps into absolute end-effector targets
+            `[x, y, z, rx, ry, rz, gripper]` in the observation's own frame: the deltas of the chunk are summed on
+            top of the observation state (the first 7 values of `observation.state`), the Euler angles are wrapped
+            to [-pi, pi] after every step, and the gripper value becomes 1.0 (open) when it is at least
+            `eef_gripper_threshold`, else 0.0. This is what the authors' VLABench client does before it hands a
+            target to the simulator. The chunk is de-normalized here with `eef_action_mean` and `eef_action_std`
+            (the converted checkpoint then maps ACTION to IDENTITY, so the processors do not normalize twice).
+        eef_action_mean, eef_action_std: Per-dimension action statistics of the active dimensions; required when
+            `eef_delta_actions` is set.
+        eef_gripper_threshold: See `eef_delta_actions`; 0.2 in the authors' client.
         training_repeat: Number of (time, noise) samples drawn per observation in training; the backbone runs once.
         freq_coefficient, freq_excluded_dims: Weight of the frequency-domain loss term and the action dimensions
             left out of it.
@@ -140,6 +154,13 @@ class XiaomiRobotics1Config(PreTrainedConfig):
     # camera, in that order.
     base_view_keys: list[str] = field(default_factory=list)
     wrist_view_keys: list[str] = field(default_factory=list)
+    view_groups: list[list[str]] = field(default_factory=list)
+
+    # End-effector delta checkpoints (VLABench): the policy hands out absolute targets, see the docstring above.
+    eef_delta_actions: bool = False
+    eef_action_mean: list[float] | None = None
+    eef_action_std: list[float] | None = None
+    eef_gripper_threshold: float = 0.2
 
     # Action expert.
     dit_hidden_size: int = 1024
@@ -212,6 +233,14 @@ class XiaomiRobotics1Config(PreTrainedConfig):
             raise ValueError("state_length and training_repeat must be at least 1.")
         if not 0.0 < self.image_crop_ratio <= 1.0:
             raise ValueError("image_crop_ratio must be in (0, 1].")
+        for group in self.view_groups:
+            if len(group) < 2:
+                raise ValueError("Each view group is [header, key, ...] with at least one camera key.")
+        if self.eef_delta_actions:
+            if self.eef_action_mean is None or self.eef_action_std is None:
+                raise ValueError("eef_delta_actions needs eef_action_mean and eef_action_std.")
+            if len(self.eef_action_mean) != len(self.eef_action_std) or len(self.eef_action_mean) < 7:
+                raise ValueError("eef_action_mean and eef_action_std must have the same length, at least 7.")
         if self.dit_hidden_size % self.dit_head_dim != 0:
             raise ValueError("dit_hidden_size must be a multiple of dit_head_dim.")
         num_heads = self.dit_hidden_size // self.dit_head_dim

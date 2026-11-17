@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from lerobot.configs.types import FeatureType, PolicyFeature
+from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from lerobot.utils.import_utils import require_package
 
@@ -52,6 +52,19 @@ DEFAULT_ROBOT_TYPE = "robocasa_mg"
 ROBOCASA_BASE_VIEWS = ["robot0_agentview_left", "robot0_agentview_right"]
 ROBOCASA_WRIST_VIEWS = ["robot0_eye_in_hand"]
 ROBOCASA_STATE_DIM = 8  # 7 joint positions + gripper; the rest of the 60 is zero padding
+
+# The VLABench checkpoint (`Xiaomi-Robotics-1-VLABench`): the authors' client sends three 480x480 cameras under the
+# headers Ego / Base / Left-Wrist, the 7 values `[x, y, z (robot frame), rx, ry, rz, gripper]` as state, and executes
+# the first 5 steps of every 10-step chunk of end-effector deltas as absolute targets (see `eval_vlabench/main.py`).
+VLABENCH_ROBOT_TYPE = "vlabench_choice"
+VLABENCH_STATE_DIM = 7
+VLABENCH_IMAGE_SIZE = 480
+VLABENCH_REPLAN_STEPS = 5
+VLABENCH_VIEW_GROUPS = [
+    ["Ego View", f"{OBS_IMAGES}.ego"],
+    ["Base View", f"{OBS_IMAGES}.base"],
+    ["Left-Wrist View", f"{OBS_IMAGES}.wrist"],
+]
 
 _ITEMSIZE = {
     "F64": 8,
@@ -97,10 +110,10 @@ def build_config(
     source_config: dict,
     preprocessor_config: dict,
     robot_type: str = DEFAULT_ROBOT_TYPE,
-    state_dim: int = ROBOCASA_STATE_DIM,
+    state_dim: int | None = None,
     base_views: list[str] | None = None,
     wrist_views: list[str] | None = None,
-    image_size: int = 256,
+    image_size: int | None = None,
     processor_name: str = XR1_PROCESSOR_REPO,
     processor_revision: str | None = None,
     dtype: torch.dtype = torch.bfloat16,
@@ -109,8 +122,21 @@ def build_config(
     from transformers import Qwen3VLConfig
 
     mean, std, chunk = action_statistics(preprocessor_config, robot_type)
-    base_views = ROBOCASA_BASE_VIEWS if base_views is None else base_views
-    wrist_views = ROBOCASA_WRIST_VIEWS if wrist_views is None else wrist_views
+    vlabench = robot_type == VLABENCH_ROBOT_TYPE
+    if vlabench:
+        state_dim = VLABENCH_STATE_DIM if state_dim is None else state_dim
+        image_size = VLABENCH_IMAGE_SIZE if image_size is None else image_size
+        view_groups = [list(group) for group in VLABENCH_VIEW_GROUPS]
+        base_views = [] if base_views is None else base_views
+        wrist_views = [] if wrist_views is None else wrist_views
+        camera_names = [group[1].removeprefix(f"{OBS_IMAGES}.") for group in VLABENCH_VIEW_GROUPS]
+    else:
+        state_dim = ROBOCASA_STATE_DIM if state_dim is None else state_dim
+        image_size = 256 if image_size is None else image_size
+        view_groups = []
+        base_views = ROBOCASA_BASE_VIEWS if base_views is None else base_views
+        wrist_views = ROBOCASA_WRIST_VIEWS if wrist_views is None else wrist_views
+        camera_names = [*base_views, *wrist_views]
     dit = source_config["dit_config"]
     camera = lambda name: f"{OBS_IMAGES}.{name}"  # noqa: E731
     vlm_config = Qwen3VLConfig(**source_config["vlm_config"]).to_dict()
@@ -126,19 +152,32 @@ def build_config(
         max_state_dim=source_config["state_dim"],
         max_action_dim=source_config["action_dim"],
         chunk_size=chunk,
-        n_action_steps=chunk,
+        n_action_steps=VLABENCH_REPLAN_STEPS if vlabench else chunk,
         base_view_keys=[camera(n) for n in base_views],
         wrist_view_keys=[camera(n) for n in wrist_views],
+        view_groups=view_groups,
+        # The authors' harness passes seed=42 on every call; the VLABench client also sends robot_type and
+        # converts the deltas to targets itself, which the policy does when `eef_delta_actions` is set.
+        noise_seed=42 if vlabench else None,
+        eef_delta_actions=vlabench,
+        eef_action_mean=mean[:7] if vlabench else None,
+        eef_action_std=std[:7] if vlabench else None,
         input_features={
             **{
                 camera(n): PolicyFeature(type=FeatureType.VISUAL, shape=(3, image_size, image_size))
-                for n in [*base_views, *wrist_views]
+                for n in camera_names
             },
             OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(state_dim,)),
         },
-        output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(len(mean),))},
+        output_features={
+            ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7 if vlabench else len(mean),))
+        },
         dtype=dtype,
     )
+    if vlabench:
+        # The policy de-normalizes and integrates the deltas itself (`eef_delta_actions`): the processors must not
+        # normalize the action a second time.
+        config.normalization_mapping = {**config.normalization_mapping, "ACTION": NormalizationMode.IDENTITY}
     stats = {ACTION: {"mean": torch.tensor(mean), "std": torch.tensor(std)}}
     return config, stats
 

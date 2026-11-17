@@ -609,10 +609,16 @@ class VLABenchEnvConfig(EnvConfig):
     render_resolution: tuple[int, int] = (480, 480)
     robot: str = "franka"
     action_mode: str = "eef"
+    # Which of VLABench's rendered cameras feed `image`, `second_image` and `wrist_image`. The default keeps the first
+    # three (the order the HF VLABench datasets use). The Xiaomi-Robotics-1 VLABench checkpoint reads the front view
+    # as its ego view, camera 0 as its base view and camera 3 as its wrist view: `--env.camera_indices=[2,0,3]`.
+    camera_indices: tuple[int, int, int] = (0, 1, 2)
 
     def __post_init__(self):
         if self.obs_type not in ("pixels", "pixels_agent_pos"):
             raise ValueError(f"Unsupported obs_type: {self.obs_type}")
+        if len(self.camera_indices) != 3 or any(i < 0 for i in self.camera_indices):
+            raise ValueError("camera_indices must be three non-negative camera indices.")
 
     @property
     def gym_kwargs(self) -> dict:
@@ -623,6 +629,7 @@ class VLABenchEnvConfig(EnvConfig):
             "robot": self.robot,
             "max_episode_steps": self.episode_length,
             "action_mode": self.action_mode,
+            "camera_indices": list(self.camera_indices),
         }
 
     def sim_settings(self) -> dict[str, Any]:

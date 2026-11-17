@@ -54,7 +54,8 @@ else:
     AutoVideoProcessor = None
     Qwen3VLProcessor = None
 
-PROMPT_HEADER = "The following observations are captured from multiple views.\n# Base View\n"
+PROMPT_INTRO = "The following observations are captured from multiple views.\n"
+PROMPT_HEADER = PROMPT_INTRO + "# Base View\n"
 WRIST_HEADER = "\n# Left-Wrist View\n"
 PROMPT_TASK = "\nGenerate robot actions for the task:\n{task} /no_cot"
 ASSISTANT_TURN = "<cot></cot>"
@@ -89,6 +90,7 @@ class XiaomiRobotics1PrepareMessagesStep(ComplementaryDataProcessorStep):
 
     base_view_keys: list[str] = field(default_factory=list)
     wrist_view_keys: list[str] = field(default_factory=list)
+    view_groups: list[list[str]] = field(default_factory=list)
     image_crop_ratio: float = 0.95
     # Visual keys of the policy, in feature order. Used when `base_view_keys` is empty (every image is a base view).
     image_keys: list[str] = field(default_factory=list)
@@ -125,15 +127,22 @@ class XiaomiRobotics1PrepareMessagesStep(ComplementaryDataProcessorStep):
 
         messages = []
         for row, task in enumerate(tasks):
-            content: list[dict[str, Any]] = [
-                {"type": "text", "text": PROMPT_HEADER},
-                *self._images(observation, base_keys, row),
-            ]
-            if wrist_keys:
-                content += [
-                    {"type": "text", "text": WRIST_HEADER},
-                    *self._images(observation, wrist_keys, row),
+            if self.view_groups:
+                content: list[dict[str, Any]] = []
+                for index, (header, *keys) in enumerate(self.view_groups):
+                    lead = PROMPT_INTRO if index == 0 else "\n"
+                    content.append({"type": "text", "text": f"{lead}# {header}\n"})
+                    content += self._images(observation, keys, row)
+            else:
+                content = [
+                    {"type": "text", "text": PROMPT_HEADER},
+                    *self._images(observation, base_keys, row),
                 ]
+                if wrist_keys:
+                    content += [
+                        {"type": "text", "text": WRIST_HEADER},
+                        *self._images(observation, wrist_keys, row),
+                    ]
             content.append({"type": "text", "text": PROMPT_TASK.format(task=str(task).strip())})
             messages.append(
                 [
@@ -148,6 +157,7 @@ class XiaomiRobotics1PrepareMessagesStep(ComplementaryDataProcessorStep):
         return {
             "base_view_keys": self.base_view_keys,
             "wrist_view_keys": self.wrist_view_keys,
+            "view_groups": self.view_groups,
             "image_crop_ratio": self.image_crop_ratio,
             "image_keys": self.image_keys,
         }
@@ -268,6 +278,7 @@ def make_xiaomi_robotics_1_pre_post_processors(
         XiaomiRobotics1PrepareMessagesStep(
             base_view_keys=list(config.base_view_keys),
             wrist_view_keys=list(config.wrist_view_keys),
+            view_groups=[list(group) for group in config.view_groups],
             image_crop_ratio=config.image_crop_ratio,
             image_keys=image_keys,
         ),

@@ -127,8 +127,10 @@ class VLABenchEnv(gym.Env):
         robot: str = "franka",
         max_episode_steps: int = DEFAULT_MAX_EPISODE_STEPS,
         action_mode: str = "eef",
+        camera_indices: tuple[int, int, int] | list[int] = (0, 1, 2),
     ):
         super().__init__()
+        self.camera_indices = tuple(camera_indices)
         self.task = task
         self.obs_type = obs_type
         self.render_mode = render_mode
@@ -316,9 +318,9 @@ class VLABenchEnv(gym.Env):
 
         image_keys = ["image", "second_image", "wrist_image"]
         images: dict[str, np.ndarray] = {}
-        for i, key in enumerate(image_keys):
-            if i < len(raw_frames):
-                images[key] = _to_hwc3(raw_frames[i])
+        for index, key in zip(self.camera_indices, image_keys, strict=True):
+            if index < len(raw_frames):
+                images[key] = _to_hwc3(raw_frames[index])
             else:
                 images[key] = np.zeros((h, w, 3), dtype=np.uint8)
 
