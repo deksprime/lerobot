@@ -1,0 +1,149 @@
+# Xiaomi-Robotics-1 (XR-1)
+
+Xiaomi-Robotics-1 is a roughly 5B-parameter **Vision-Language-Action policy** from Xiaomi Robotics, trained on more
+than 100K hours of real-world trajectories. The LeRobot implementation runs the released checkpoints through the
+standard policy, processor, `lerobot-train` and `lerobot-eval` interfaces. The original code and checkpoints are
+Apache-2.0: [code](https://github.com/XiaomiRobotics/Xiaomi-Robotics-1) and
+[checkpoints](https://huggingface.co/XiaomiRobotics).
+
+## Model Overview
+
+- A **Qwen3-VL-4B** backbone reads the camera views and the instruction once per chunk. The images are grouped under
+  `# Base View` and `# Left-Wrist View` headers, followed by `Generate robot actions for the task: ... /no_cot`.
+- A **36-layer DiT action expert** (hidden size 1024, 8 heads of 128) integrates a flow-matching velocity field in five
+  Euler steps. Every expert layer attends to its own tokens (a sink token, the state, the noisy action chunk) and to
+  the key/value cache of the backbone layer with the same index. There are no cross-attention weights: the backbone
+  cache is the conditioning.
+- State and action are zero-padded to 60 dimensions. The released checkpoints predict a chunk of 10 or 16 steps; see
+  [Checkpoint settings](#checkpoint-settings).
+
+The backbone is the stock `transformers` `Qwen3VLForConditionalGeneration`, subclassed only to expose the prefix cache
+and the multimodal positions. The action expert is written against the released tensor layout, so a converted
+checkpoint keeps the authors' parameter names under a `model.` prefix. Nothing uses `trust_remote_code`.
+
+### What the LeRobot integration covers
+
+- `policy.type=xiaomi_robotics_1`, checkpoint save and load, and the standard processor pipelines.
+- Inference with converted checkpoints.
+- Fine-tuning with the flow-matching loss of the authors' training code: a masked MSE term plus a frequency-domain
+  term. The loss matches the authors' `compute_flow_loss` for unit sample weights (a unit test compares them).
+
+**Not covered.** The authors' training also supervises the backbone with auxiliary "action choice" and "score" tokens,
+and has a prefix-conditioned "async" training mode. The released inference checkpoints carry no such tokens. This
+port trains with the flow-matching loss only, so a fine-tuning run is not expected to reproduce the authors' run
+bit for bit.
+
+## Installation
+
+```bash
+pip install -e ".[xiaomi_robotics_1]"
+```
+
+The backbone uses PyTorch's scaled-dot-product attention by default. The authors run it with FlashAttention 2. Use
+`policy.attn_implementation=flash_attention_2` if `flash_attn` is installed.
+
+## Checkpoint settings
+
+The released checkpoints are in the authors' own `transformers` format and need `trust_remote_code`. `--policy.path`
+takes a **LeRobot-format** checkpoint, which keeps the authors' parameter names under a `model.` prefix.
+
+A few settings belong to a checkpoint and not to the architecture. Set them to the values of the checkpoint you use:
+
+| Setting                        | RoboCasa checkpoint                            | RoboCasa365 checkpoint                         | VLABench checkpoint                                         |
+| ------------------------------ | ---------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------- |
+| `processor_name`               | `XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa`    | `XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa365` | `XiaomiRobotics/Xiaomi-Robotics-1-VLABench`                 |
+| `chunk_size`                   | 10                                             | 16                                             | 10                                                          |
+| `n_action_steps`               | 10                                             |                                                | 5                                                           |
+| `state_length`                 | 1                                              | 4                                              | 1                                                           |
+| `image_crop_ratio`             | 0.95                                           |                                                | 1.0 (no crop)                                               |
+| `image_max_pixels`             | 90000                                          |                                                | 16777216 (the 480 px cameras are not downscaled)            |
+| `view_groups`                  | not used (`base_view_keys`, `wrist_view_keys`) |                                                | `Ego View`, `Base View`, `Left-Wrist View`, one camera each |
+| `eef_delta_actions`            | false                                          |                                                | true, with `eef_action_mean` and `eef_action_std`           |
+| `noise_seed`                   | none                                           |                                                | 42                                                          |
+| `normalization_mapping` ACTION | mean/std                                       |                                                | IDENTITY (the policy de-normalizes the deltas itself)       |
+
+An empty cell means I did not check that value for the checkpoint. The VLABench checkpoint predicts end-effector deltas.
+With `eef_delta_actions=true`, `select_action` sums the de-normalized deltas of the first `n_action_steps` steps on top
+of the end-effector pose in `observation.state`, wraps the Euler angles after every step, and turns the gripper output
+into 1.0 or 0.0 with `eef_gripper_threshold`, as the authors' VLABench client does.
+
+`processor_name` has no default: the XR-1 tokenizer and chat template differ from the stock Qwen3-VL ones, and they
+are read from the checkpoint repository when the processors are built. Pin `processor_revision` to a commit hash.
+Use the official `XiaomiRobotics/*` repositories only. The other values (`image_crop_ratio`, the camera view keys, how
+the state is normalized) are documented in `XiaomiRobotics1Config`.
+
+## Training
+
+```bash
+lerobot-train \
+  --policy.path=<namespace>/<checkpoint> \
+  --policy.processor_name=XiaomiRobotics/Xiaomi-Robotics-1-VLABench \
+  --dataset.repo_id=<dataset> \
+  --policy.repo_id=<namespace>/<output-name> \
+  --output_dir=outputs/train/xiaomi_robotics_1 \
+  --steps=<steps> \
+  --batch_size=<batch size> \
+  --policy.device=cuda
+```
+
+The model has about 5B parameters. Use a GPU with enough memory for the backbone, the action expert and the optimizer
+state, or set `policy.train_vlm=false` to train the action expert only.
+
+## Evaluation
+
+```bash
+lerobot-eval \
+  --policy.path=<namespace>/<checkpoint> \
+  --policy.processor_name=XiaomiRobotics/Xiaomi-Robotics-1-VLABench \
+  --env.type=vlabench \
+  --env.task=<tasks> \
+  --eval.n_episodes=50 \
+  --eval.batch_size=1 \
+  --eval.use_async_envs=false \
+  --policy.device=cuda
+```
+
+See the [VLABench](./vlabench) page for how to install the environment and for the camera `--rename_map`. The VLABench
+checkpoint expects three cameras (ego, base and wrist) under the prompt headers `Ego View`, `Base View` and
+`Left-Wrist View`. The environment's default camera set is not the one the authors use, which is an open question
+(see Results).
+
+### Results
+
+Evaluated with `lerobot-eval` on VLABench, 50 episodes per task, one RTX 4090 (49,140 MiB), the converted
+`XiaomiRobotics/Xiaomi-Robotics-1-VLABench` checkpoint:
+
+| Task           | Success rate | Successes | 95% interval (Wilson) |
+| -------------- | -----------: | --------: | --------------------: |
+| select_fruit   |        50.0% |     25/50 |           36.6 - 63.4 |
+| select_toy     |        62.0% |     31/50 |           48.2 - 74.1 |
+| select_book    |        84.0% |     42/50 |           71.5 - 91.7 |
+| select_mahjong |        82.0% |     41/50 |           69.2 - 90.2 |
+| **average**    |    **69.5%** |   139/200 |           62.8 - 75.5 |
+
+The authors report an average of 62.6%. The numbers are not like for like: LeRobot's environment uses random layouts
+and a 500-step cap, and the authors use five fixed tracks of 200 steps. These runs also used a local change to
+`VLABenchEnvConfig` that selects which of VLABench's rendered cameras feed `image`, `second_image` and `wrist_image`
+(`camera_indices=[2, 0, 3]`). That option is not in LeRobot, so with the current environment the cameras differ from
+the ones the checkpoint was trained with.
+
+## Differences from the original implementation
+
+- The original runs on `transformers` 4.57.1. LeRobot uses 5.x, where multimodal rope needs `mm_token_type_ids`. The
+  authors' processor does not return them, so the policy derives them from `input_ids` when they are absent.
+- The original backbone supports FlashAttention 2 or eager attention only. The port defaults to SDPA.
+- The authors' timestep embedder hard-codes a bfloat16 cast, so their model cannot run in float32. The port follows the
+  module's dtype. The result is identical in bfloat16.
+- The rotary `inv_freq` buffers are non-persistent and are rounded to bfloat16 when the whole model is cast, as in the
+  authors' stack. The port casts the whole model the same way, and a test covers it.
+
+## Citation
+
+```bibtex
+@article{team2026xiaomi,
+  title={Xiaomi-Robotics-1: Scaling Vision-Language-Action Models with over 100K Hours of Real-World Trajectories},
+  author={Team, Xiaomi Robotics and Guo, Jun and Jin, Piaopiao and Li, Jason and Li, Peiyan and Li, Yingyan and Liu, Futeng and Peng, Wanli and Qin, Optimus and Su, Yifei and others},
+  journal={arXiv preprint arXiv:2607.15330},
+  year={2026}
+}
+```

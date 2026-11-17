@@ -251,6 +251,7 @@ sarm = ["lerobot[transformers-dep]", "pydantic>=2.0.0,<3.0.0", "faker>=33.0.0,<3
 robometer = ["lerobot[transformers-dep]", "lerobot[qwen-vl-utils-dep]", "lerobot[peft-dep]"]
 topreward = ["lerobot[transformers-dep]"]
 xvla = ["lerobot[transformers-dep]"]
+xiaomi_robotics_1 = ["lerobot[transformers-dep]"]
 eo1 = ["lerobot[transformers-dep]", "lerobot[qwen-vl-utils-dep]"]
 longwam = ["lerobot[transformers-dep]", "lerobot[diffusers-dep]", "lerobot[sentencepiece-dep]"]
 fastwam = [
@@ -375,6 +376,7 @@ all = [
     "lerobot[flux3]",
     "lerobot[groot]",
     "lerobot[xvla]",
+    "lerobot[xiaomi_robotics_1]",
     "lerobot[evo1]",
     "lerobot[hilserl]",
     "lerobot[vla_jepa]",

@@ -29,6 +29,8 @@ This is a Gaussian Actor policy (Gaussian policy with a tanh squash) — the pol
 [π₀-FAST (Pi0-FAST)](https://www.physicalintelligence.company/research/fast) is a Vision-Language-Action model for general robot control, from Physical Intelligence. It models continuous robot actions with autoregressive next-token prediction using FAST (Frequency-space Action Sequence Tokenization), training up to 5x faster than diffusion-based π₀.
 {% elif model_name == "eo1" %}
 [EO-1](https://huggingface.co/papers/2508.21112) is a Vision-Language-Action model for general robot control. It pairs a Qwen2.5-VL backbone for vision-language understanding with a continuous flow-matching action head that denoises action chunks.
+{% elif model_name == "xiaomi_robotics_1" %}
+[Xiaomi-Robotics-1 (XR-1)](https://github.com/XiaomiRobotics/Xiaomi-Robotics-1) is a ~5B Vision-Language-Action model from Xiaomi Robotics. A Qwen3-VL-4B backbone reads the camera views and the instruction, and a 36-layer DiT action expert that attends to the backbone's key/value cache denoises an action chunk with flow matching.
 {% elif model_name == "groot" %}
 [GR00T N1.7](https://github.com/NVIDIA/Isaac-GR00T) is an open, cross-embodiment foundation model from NVIDIA for generalized humanoid robot reasoning and skills. It uses a Cosmos-Reason2/Qwen3-VL backbone and a flow-matching action transformer to predict actions conditioned on vision, language, and proprioception.
 {% elif model_name == "multi_task_dit" %}
@@ -106,6 +108,7 @@ This policy has been trained and pushed to the Hub using [LeRobot](https://githu
   "eo1": "eo1",
   "groot": "groot",
   "xvla": "xvla",
+  "xiaomi_robotics_1": "xiaomi_robotics_1",
   "multi_task_dit": "multi_task_dit",
   "wall_x": "walloss",
   "wall_oss_05": "wall_oss_05",
