@@ -43,7 +43,7 @@ from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from lerobot.utils.import_utils import require_package
 
-from .configuration_xiaomi_robotics_1 import XR1_PROCESSOR_REPO, XiaomiRobotics1Config
+from .configuration_xiaomi_robotics_1 import XR1_PROCESSOR_REPO, XR1_PROCESSOR_REVISION, XiaomiRobotics1Config
 from .processor_xiaomi_robotics_1 import make_xiaomi_robotics_1_pre_post_processors
 
 ACTIVE_STD = 1e-5  # the authors' action mask: a dimension is active when its std exceeds this
@@ -228,16 +228,30 @@ def _tensor_loader(shard: Path, key: str) -> Callable[[], torch.Tensor]:
     return load
 
 
+def default_processor_revision(source: str | Path, revision: str | None) -> str | None:
+    """Revision of the official processor repository to read the tokenizer, chat template and image settings from.
+
+    A checkpoint from another Hub repository (the VLABench one) has its own revision, which does not exist in the
+    processor repository: the pinned processor revision is used. The RoboCasa repository, or a local directory,
+    keeps `revision` (the processors it is converted with).
+    """
+    other_hub_repo = not Path(source).is_dir() and str(source) != XR1_PROCESSOR_REPO
+    return XR1_PROCESSOR_REVISION if other_hub_repo else revision
+
+
 def convert(
     source: str,
     output_dir: str | Path,
     revision: str | None = None,
     robot_type: str = DEFAULT_ROBOT_TYPE,
+    processor_revision: str | None = None,
     **config_kwargs,
 ) -> Path:
     from safetensors import safe_open
 
     source_dir = Path(source)
+    if processor_revision is None:
+        processor_revision = default_processor_revision(source, revision)
     if not source_dir.is_dir():
         from huggingface_hub import snapshot_download
 
@@ -254,7 +268,7 @@ def convert(
         source_config,
         preprocessor_config,
         robot_type=robot_type,
-        processor_revision=revision,
+        processor_revision=processor_revision,
         **config_kwargs,
     )
 
@@ -288,8 +302,22 @@ def main() -> None:
     parser.add_argument("--revision", default=None, help="Revision to pin (recommended).")
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--robot_type", default=DEFAULT_ROBOT_TYPE)
+    parser.add_argument(
+        "--processor_revision",
+        default=None,
+        help="Revision of the official processor repository (tokenizer, chat template, image-processor settings). "
+        f"Default: `--revision` for {XR1_PROCESSOR_REPO} or a local directory, else the pinned {XR1_PROCESSOR_REVISION[:8]}.",
+    )
     args = parser.parse_args()
-    print(convert(args.source, args.output_dir, revision=args.revision, robot_type=args.robot_type))
+    print(
+        convert(
+            args.source,
+            args.output_dir,
+            revision=args.revision,
+            robot_type=args.robot_type,
+            processor_revision=args.processor_revision,
+        )
+    )
 
 
 if __name__ == "__main__":

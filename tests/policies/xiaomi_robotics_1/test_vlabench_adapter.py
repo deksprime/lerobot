@@ -182,3 +182,19 @@ def test_the_env_picks_the_cameras_it_is_told_to():
     assert xiaomi.gym_kwargs["camera_indices"] == [2, 0, 3]
     with pytest.raises(ValueError, match="three"):
         VLABenchEnvConfig(camera_indices=(0, 1))
+
+
+def test_the_processor_revision_follows_the_checkpoint_only_for_the_processor_repository():
+    from lerobot.policies.xiaomi_robotics_1.configuration_xiaomi_robotics_1 import (
+        XR1_PROCESSOR_REPO,
+        XR1_PROCESSOR_REVISION,
+    )
+    from lerobot.policies.xiaomi_robotics_1.convert_xiaomi_robotics_1_to_lerobot import (
+        default_processor_revision,
+    )
+
+    assert default_processor_revision(XR1_PROCESSOR_REPO, "abc") == "abc"
+    assert (
+        default_processor_revision("XiaomiRobotics/Xiaomi-Robotics-1-VLABench", "f498")
+        == XR1_PROCESSOR_REVISION
+    )
