@@ -209,6 +209,10 @@ def convert(
                 allow_patterns=["config.json", "preprocessor_config.json", "*.safetensors", "*.index.json"],
             )
         )
+    if not Path(source).is_dir():
+        # The tokenizer and image settings are read from the same Hub repo and revision as the weights: pinning a
+        # revision of one repo against the default (RoboCasa) processor repo makes the processors unloadable.
+        config_kwargs.setdefault("processor_name", source)
     source_config = json.loads((source_dir / "config.json").read_text())
     preprocessor_config = json.loads((source_dir / "preprocessor_config.json").read_text())
     config, stats = build_config(
