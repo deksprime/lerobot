@@ -60,6 +60,7 @@ VLABENCH_ROBOT_TYPE = "vlabench_choice"
 VLABENCH_STATE_DIM = 7
 VLABENCH_IMAGE_SIZE = 480
 VLABENCH_REPLAN_STEPS = 5
+VLABENCH_MAX_PIXELS = 16_777_216  # no downscaling of the 480-pixel cameras
 VLABENCH_VIEW_GROUPS = [
     ["Ego View", f"{OBS_IMAGES}.ego"],
     ["Base View", f"{OBS_IMAGES}.base"],
@@ -159,6 +160,12 @@ def build_config(
         # The authors' harness passes seed=42 on every call; the VLABench client also sends robot_type and
         # converts the deltas to targets itself, which the policy does when `eef_delta_actions` is set.
         noise_seed=42 if vlabench else None,
+        # The authors' RoboCasa harness centre-crops every image to 95 %; their VLABench client only resizes to 480.
+        image_crop_ratio=1.0 if vlabench else 0.95,
+        # The authors' client loads the slow processor, which does not apply the repository's min/max pixel bounds: a
+        # 480x480 image stays 480x480 (900 patches, 225 tokens). The bounds (90000 pixels) belong to the 256-pixel
+        # RoboCasa cameras, where they do nothing.
+        image_max_pixels=VLABENCH_MAX_PIXELS if vlabench else 90000,
         eef_delta_actions=vlabench,
         eef_action_mean=mean[:7] if vlabench else None,
         eef_action_std=std[:7] if vlabench else None,

@@ -164,6 +164,8 @@ def test_the_vlabench_preset_of_the_converter():
     config, stats = build_config(source_config, preprocessor_config, robot_type=VLABENCH_ROBOT_TYPE)
     assert isinstance(config, XiaomiRobotics1Config)
     assert config.eef_delta_actions and config.noise_seed == 42
+    assert config.image_crop_ratio == 1.0  # the authors' VLABench client does not crop
+    assert config.image_max_pixels > 480 * 480  # and does not downscale its 480-pixel cameras
     assert config.chunk_size == 10 and config.n_action_steps == 5
     assert config.eef_action_mean == MEAN and config.eef_action_std == STD
     assert [g[0] for g in config.view_groups] == ["Ego View", "Base View", "Left-Wrist View"]
